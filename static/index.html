@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Chatbot</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        text-align: center;
+        background-color: #f4f4f4;
+      }
+      #chat-container {
+        max-width: 500px;
+        margin: auto;
+        padding: 20px;
+        background: white;
+        border-radius: 10px;
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+      }
+      #messages {
+        height: 300px;
+        overflow-y: auto;
+        border: 1px solid #ccc;
+        padding: 10px;
+        background: #fff;
+        border-radius: 5px;
+        text-align: left;
+      }
+      .user,
+      .bot {
+        margin: 10px 0;
+        padding: 8px;
+        border-radius: 5px;
+      }
+      .user {
+        background: #d1e7fd;
+        text-align: right;
+      }
+      .bot {
+        background: #d4edda;
+        text-align: left;
+      }
+      #userInput {
+        width: 80%;
+        padding: 10px;
+        margin-top: 10px;
+        border: 1px solid #ccc;
+        border-radius: 5px;
+      }
+      button {
+        padding: 10px;
+        margin-top: 10px;
+        border: none;
+        background: #007bff;
+        color: white;
+        border-radius: 5px;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #0056b3;
+      }
+      #fileInput {
+        margin-top: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <h2>Chat with AI</h2>
+    <div id="chat-container">
+      <div id="messages"></div>
+      <input type="text" id="userInput" placeholder="Type a message..." />
+      <button onclick="sendMessage()">Send</button>
+      <input type="file" id="fileInput" />
+      <button onclick="uploadFile()">Upload File</button>
+      <button onclick="toggleVoiceInput()">🎤 Toggle Voice Input</button>
+    </div>
+
+    <script>
+      let uploadedFileContent = "";
+      let recognition;
+      let isListening = false;
+
+      async function uploadFile() {
+        const fileInput = document.getElementById("fileInput");
+        const file = fileInput.files[0];
+
+        if (!file) {
+          alert("Please select a file to upload.");
+          return;
+        }
+
+        const formData = new FormData();
+        formData.append("file", file);
+
+        const response = await fetch("http://127.0.0.1:8000/upload", {
+          method: "POST",
+          body: formData,
+        });
+
+        const data = await response.json();
+        uploadedFileContent = data.content;
+        alert("File uploaded successfully!");
+      }
+
+      async function sendMessage() {
+        const userInput = document.getElementById("userInput").value;
+        if (!userInput) return;
+
+        const messagesDiv = document.getElementById("messages");
+        messagesDiv.innerHTML += `<div class='user'><strong>You:</strong> ${userInput}</div>`;
+
+        const response = await fetch("http://127.0.0.1:8000/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message: userInput,
+            file_content: uploadedFileContent,
+          }),
+        });
+
+        const data = await response.json();
+        const botMessage = marked.parse(data.response);
+
+        messagesDiv.innerHTML += `<div class='bot'><strong>Bot:</strong> ${botMessage}</div>`;
+        document.getElementById("userInput").value = "";
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+      }
+
+      function toggleVoiceInput() {
+        if (!recognition) {
+          recognition = new (window.SpeechRecognition ||
+            window.webkitSpeechRecognition)();
+          recognition.lang = "en-US";
+          recognition.continuous = true; // Keeps listening for multiple commands
+          recognition.onresult = function (event) {
+            const transcript =
+              event.results[event.results.length - 1][0].transcript;
+            document.getElementById("userInput").value = transcript;
+            sendMessage();
+          };
+          recognition.onerror = function (event) {
+            console.error("Speech recognition error", event);
+          };
+        }
+
+        if (isListening) {
+          recognition.stop();
+          isListening = false;
+        } else {
+          recognition.start();
+          isListening = true;
+        }
+      }
+    </script>
+  </body>
+</html>
