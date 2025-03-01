@@ -1,11 +1,13 @@
 from importlib.resources import open_text
 import os
+import re
 import faiss
 import requests
 import shutil
 import json
 import fitz  # PyMuPDF for extracting text
 import numpy as np
+import dateparser
 from fastapi import BackgroundTasks, FastAPI, HTTPException, UploadFile, File, Request
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,12 +25,16 @@ from langchain.schema import AIMessage, HumanMessage, SystemMessage
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from datetime import datetime, timezone
+from datetime import datetime, timedelta
 import pyttsx3  # Text-to-speech
 import speech_recognition as sr  # Speech recognition
+import logging
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-
-SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
+SCOPES = ["https://www.googleapis.com/auth/calendar.readonly", "https://www.googleapis.com/auth/calendar.events"]
 SERVICE_ACCOUNT_FILE = os.path.abspath("D:/Chat Bot API/credentials.json")  # Update the path
 
 # Load API keys from .env
@@ -50,6 +56,7 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -182,6 +189,66 @@ def get_calendar_events():
     except Exception as e:
         return {"meetings": [], "voice": f"Error fetching meetings: {str(e)}"}
 
+def parse_meeting_details(message):
+    """Extracts date, start time, and end time from a message."""
+    try:
+        # Remove ordinal suffixes (1st, 2nd, 3rd, etc.) to improve parsing
+        message = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', message)
+
+        # Extract date using dateparser
+        date_match = dateparser.parse(message, settings={'PREFER_DATES_FROM': 'future'})
+
+        if not date_match:
+            return None, None, None, "Could not determine the date from your message."
+
+        # Extract time range using regex
+        time_match = re.search(r'(\d{1,2}:\d{2}\s*[ap]m?)\s*to\s*(\d{1,2}:\d{2}\s*[ap]m?)', message, re.IGNORECASE)
+
+        if not time_match:
+            return None, None, None, "Could not understand start and end time."
+
+        start_time_str = time_match.group(1).strip()
+        end_time_str = time_match.group(2).strip()
+
+        # Parse start and end times relative to the detected date
+        start_time = dateparser.parse(start_time_str, settings={'RELATIVE_BASE': date_match})
+        end_time = dateparser.parse(end_time_str, settings={'RELATIVE_BASE': date_match})
+
+        if not start_time or not end_time:
+            return None, None, None, "Invalid time format."
+
+        return date_match.date(), start_time.isoformat(), end_time.isoformat(), None
+    except Exception as e:
+        return None, None, None, f"Error parsing meeting details: {str(e)}"
+
+def create_calendar_event(summary, start_time, end_time, description=""):
+    """Creates a new event in Google Calendar."""
+    try:
+        creds = service_account.Credentials.from_service_account_file(
+            SERVICE_ACCOUNT_FILE, scopes=SCOPES
+        )
+        service = build("calendar", "v3", credentials=creds)
+
+        event = {
+            'summary': summary,
+            'description': description,
+            'start': {
+                'dateTime': start_time,
+                'timeZone': 'UTC',
+            },
+            'end': {
+                'dateTime': end_time,
+                'timeZone': 'UTC',
+            },
+        }
+
+        event = service.events().insert(calendarId='sachinbfrnd@gmail.com', body=event).execute()
+        logger.info(f"Event created: {event.get('htmlLink')}")
+        return {"status": "success", "event_link": event.get('htmlLink')}
+    except Exception as e:
+        logger.error(f"Error creating event: {str(e)}")
+        return {"status": "error", "message": str(e)}
+
 # Function to Speak Text in the Background
 def speak_text(text):
     engine = pyttsx3.init()
@@ -217,10 +284,19 @@ async def summarize_with_groq(context, query):
     except Exception as e:
         print(f"Error summarizing with Groq: {str(e)}")
         return "Sorry, I encountered an error while processing your request."
-
-# Chatbot Request Model
-class ChatRequest(BaseModel):
-    message: str
+    
+async def Cal_converter(calEvent):
+    """Summarizes text using Groq model."""
+    try:
+        messages = [
+            SystemMessage(content="You are a helpful google calendar assistant. "),
+            HumanMessage(content=f"Context: {calEvent}\nQuery: Convert the below google calendar output to voice text")
+         ]
+        response = llm.invoke(messages)
+        return response.content
+    except Exception as e:
+        print(f"Error summarizing with Groq: {str(e)}")
+        return "Sorry, I encountered an error while processing your request."
 
 @app.post("/chat")
 async def chat(request: ChatRequest, req: Request, background_tasks: BackgroundTasks):
@@ -230,19 +306,40 @@ async def chat(request: ChatRequest, req: Request, background_tasks: BackgroundT
         if await req.is_disconnected():
             return {"response": "Client disconnected before response."}
 
-        if "meeting" in message or "schedule" in message:
+        response_text = ""  # Initialize response_text
+
+        if "create meeting" in message or "schedule meeting" in message:
+            # Parse meeting details from the message
+            date_time, start_time, end_time, error = parse_meeting_details(message)
+            if error:
+                response_text = error
+            else:
+                summary = "New Meeting"
+                description = "Discuss project updates."
+
+                event_response = create_calendar_event(summary, start_time, end_time, description)
+                if event_response["status"] == "success":
+                    response_text = f"Meeting created successfully: {event_response['event_link']}"
+                else:
+                    response_text = f"Error creating meeting: {event_response['message']}"
+
+            background_tasks.add_task(speak_text, response_text)  # ✅ Speak in background
+            return {"response": response_text}
+
+        elif "show my meeting" in message or "show my scheduled meetings" in message:
             calendar_data = get_calendar_events()  # ✅ Fetch calendar events
             response_text = "\n".join(calendar_data["meetings"])  # ✅ Format for chatbot
 
-            background_tasks.add_task(speak_text, calendar_data["voice"])  # ✅ Speak in background
-
+            background_tasks.add_task(speak_text, response_text)  # ✅ Speak in background
             return {"response": response_text}  # ✅ Chatbot shows response immediately
 
-        # Retrieve relevant context for chatbot
-        context = "General chatbot context"
-        response = await summarize_with_groq(context, f"Answer this based on context: {message}")
+        else:
+            # Handle general questions using Groq model
+            context = retrieve_relevant_info(message)
+            response_text = await summarize_with_groq(context, message)
 
-        return {"response": response}
+            background_tasks.add_task(speak_text, response_text)  # ✅ Ensure voice response matches chat response
+            return {"response": response_text}
 
     except Exception as e:
         return {"response": f"Internal Server Error: {str(e)}"}
