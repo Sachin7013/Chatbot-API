@@ -86,7 +86,7 @@ def store_text_in_faiss(text):
 def retrieve_relevant_info(query):
     """Retrieves relevant context from stored FAISS vectors."""
     global vector_db
-    if vector_db:
+    if (vector_db):
         try:
             docs = vector_db.similarity_search(query, k=2)
             context = " ".join([doc.page_content for doc in docs])
@@ -202,7 +202,7 @@ def parse_meeting_details(message):
             return None, None, None, "Could not determine the date from your message."
 
         # Extract time range using regex
-        time_match = re.search(r'(\d{1,2}:\d{2}\s*[ap]m?)\s*to\s*(\d{1,2}:\d{2}\s*[ap]m?)', message, re.IGNORECASE)
+        time_match = re.search(r'(\d{1,2}\s*[ap]m?)\s*to\s*(\d{1,2}\s*[ap]m?)', message, re.IGNORECASE)
 
         if not time_match:
             return None, None, None, "Could not understand start and end time."
@@ -228,19 +228,22 @@ def create_calendar_event(summary, start_time, end_time, description=""):
             SERVICE_ACCOUNT_FILE, scopes=SCOPES
         )
         service = build("calendar", "v3", credentials=creds)
-
         event = {
-            'summary': summary,
-            'description': description,
-            'start': {
-                'dateTime': start_time,
-                'timeZone': 'UTC',
-            },
-            'end': {
-                'dateTime': end_time,
-                'timeZone': 'UTC',
-            },
-        }
+        'summary': 'Meeting with John',
+        'location': '1234 Street, City, Country',
+        'description': 'Discussing the quarterly goals and progress.',
+        'start': {
+            'dateTime': '2025-03-05T09:00:00',
+            'timeZone': 'America/New_York',
+        },
+        'end': {
+            'dateTime': '2025-03-05T10:00:00',
+            'timeZone': 'America/New_York',
+        },
+        'reminders': {
+            'useDefault': True,
+        },
+    }
 
         event = service.events().insert(calendarId='sachinbfrnd@gmail.com', body=event).execute()
         logger.info(f"Event created: {event.get('htmlLink')}")
@@ -311,6 +314,7 @@ async def chat(request: ChatRequest, req: Request, background_tasks: BackgroundT
         if "create meeting" in message or "schedule meeting" in message:
             # Parse meeting details from the message
             date_time, start_time, end_time, error = parse_meeting_details(message)
+           
             if error:
                 response_text = error
             else:
